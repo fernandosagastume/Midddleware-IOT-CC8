@@ -7,6 +7,10 @@ var fs = require('fs');
 var mysql = require('mysql');
 var express = require('express');
 var querys = require('querystring');
+var moment = require('moment');
+var colores = require('hex-to-color-name');
+let VDChanges = false;
+let VDNewData = "";
 
 //Función para obtener el tamaño en bytes de un archivo
 function getFilesizeInBytes(filename) {
@@ -17,6 +21,12 @@ function getFilesizeInBytes(filename) {
 //Función para convertir de hexadecimal a binario
 function hex2bin(hex){
     return (parseInt(hex, 16).toString(2)).padStart(8, '0');
+}
+
+//Función para remplazar caracteres en un string
+function setCharAt(str,index,chr) {
+    if(index > str.length-1) return str;
+    return str.substring(0,index) + chr + str.substring(index+1);
 }
 
 var conec = mysql.createConnection({
@@ -37,8 +47,7 @@ var server = http.createServer(function(request, response){
     switch(path){
         case "/":
             var referrer = request.headers.referer;
-            //let dataToSend = "FFF000000000000000000000";
-            //Select a la tabla de aplicaciones
+            //Select a la tabla de virtual devices
             var mysqlQ = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
             conec.query(mysqlQ, function(err, rows, fields) {
                 //Si no se encuentra nada en la tabla, entonces se inserta
@@ -75,19 +84,134 @@ var server = http.createServer(function(request, response){
             //Se obtiene el payload del IOT device (limite máximo del tamaño debe de ser 88 bytes)
             payload(request, {limit: 88}, function(body) {
                 console.log('Este es el payload -> ',body);
-                const ip = request.connection.remoteAddress;
-                //Select a la tabla de aplicaciones
-                var mysqlQ = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
-                conec.query(mysqlQ, function(err, rows, fields) {
-
-                });
                 //console.log(body.substring(2,3));
-                //Se convierte en bytes los datos que se van a enviar
-                var bytes = Buffer.byteLength(body, 'utf8');
-                response.setHeader('Content-Length', bytes);
-                //Status code 200: OK
-                response.writeHead(200);
-                response.end(body);
+                //Select a la tabla de virtual devices
+                var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                conec.query(mysqli, function(err, rows, fields) {
+                    var mysqli1 = mysql.format("SELECT * FROM `bitacora_vd` ORDER BY bitacora_VD_ID DESC");
+                    conec.query(mysqli1, function(err1, rows1, fields1) {
+                        /*if(rows1.length > 0) {
+                            if (rows1[0].dataReceived == body) {
+                                //Se prepara el insert a la base de datos
+                                var queryy2 = "UPDATE bitacora_vd SET ? WHERE ?";
+                                //Se guarda el request del virtual device en la bitacora
+                                var vals2 = [{DateAndTime: moment().format('YYYY-MM-DD HH:mm:ss')}, {dataReceived: rows[0].dataReceived}];
+                                conec.query(queryy2, [vals2], function (err, result) {
+                                    if(result != null)
+                                        console.log("Datos actualizados en la bitacora de los vd: " + result.affectedRows);
+                                });
+                            } else {
+                                //Se prepara el insert a la base de datos
+                                var queryy2 = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                //Se guarda el request del virtual device en la bitacora
+                                var vals2 = [[moment().format('YYYY-MM-DD HH:mm:ss'), body, rows[0].vdID]];
+                                conec.query(queryy2, [vals2], function (err, result) {
+                                    console.log("Filas insertadas en la bitacora de los vd: " + result.affectedRows);
+                                });
+                            }
+                        }*/
+                        if(rows1.length < 0) {
+                            //Se prepara el insert a la base de datos
+                            var queryy2 = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdCondition, vdID) VALUES ?";
+                            //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                            var vals2 = [[moment().format('YYYY-MM-DD HH:mm:ss'), body, "Init", rows[0].vdID]];
+                            conec.query(queryy2, [vals2], function (err, result) {
+                                console.log("Filas insertadas en la bitacora de los vd: " + result.affectedRows);
+                            });
+                        }
+                    });
+                });
+                var bool = false;
+                if(body.substring(1,2) == "0"){
+                    body = setCharAt(body, 1, '2');
+                    bool = true;
+                }
+                else{
+                    var axu = hex2bin(body.substring(1,2));
+                    if(axu.charAt(axu.length-2) == '0' && axu.charAt(axu.length-3) == '0'){
+                        if(axu.charAt(axu.length-4) == '0'){
+                            body = setCharAt(body, 1, '2');
+                            bool = true;
+                        }else{
+                            body = setCharAt(body, 1, 'A');
+                            bool = true;
+                        }
+                    }
+                }
+
+                conec.query("SELECT * FROM bitacora_vd ORDER BY bitacora_VD_ID DESC", function (err1, rows2, fields1) {
+                    mostRecent = rows2[0].dataReceived;
+                    console.log("FOUND: ", mostRecent)
+                    //Se compara con el valor más reciente
+                    if (mostRecent != body) {
+                        //Si hubieron cambios del EU entonces se toman esos cambios
+                        if(VDChanges) {
+                            VDChanges = false;
+                            //Se convierte en bytes los datos que se van a enviar
+                            var bytes = Buffer.byteLength(mostRecent, 'utf8');
+                            response.setHeader('Content-Length', bytes);
+                            //Status code 200: OK
+                            response.writeHead(200);
+                            response.end(mostRecent);
+                        }else{//De lo contrario fueron cambios hechos por el VD
+                            //Valor del color picker
+                            var aux = body.substring(18, 24);
+                            var cont = 0;
+                            //Siempre se le pone el valor del color picker al RGB
+                            for (var i = 11; i < 17; i++) {
+                                body = setCharAt(body, i, aux.charAt(cont));
+                                cont++;
+                            }
+                            //Select a la tabla de virtual devices
+                            var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                            conec.query(mysqli, function(err, rowsVD, fields) {
+                                //Se prepara el insert a la base de datos
+                                var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), body, rowsVD[0].vdID]];
+                                conec.query(query, [vals], function (err2, result2) {
+                                    console.log("Bitacora VD cambiada por EU: " + result2.affectedRows);
+                                });
+                            });
+                            //Se convierte en bytes los datos que se van a enviar
+                            var bytes = Buffer.byteLength(body, 'utf8');
+                            response.setHeader('Content-Length', bytes);
+                            //Status code 200: OK
+                            response.writeHead(200);
+                            response.end(body);
+                        }
+                    }else {
+                        if (bool == true) {
+                            conec.query("SELECT * FROM bitacora_vd ORDER BY bitacora_VD_ID DESC", function (err1, rows2, fields1) {
+                                mostRecent = rows2[0].dataReceived;
+                                //Se compara con el valor más reciente
+                                if (mostRecent != body) {
+                                    //Select a la tabla de virtual devices
+                                    var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                    conec.query(mysqli, function (err, rows, fields) {
+                                        //Se prepara el insert a la base de datos
+                                        var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                        //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                        var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), body, rows[0].vdID]];
+                                        conec.query(query, [vals], function (err, result) {
+                                            console.log("Filas insertadas en la bitacora de los vd: " + result.affectedRows);
+                                        });
+                                    });
+                                }
+                            });
+
+                            //Se convierte en bytes los datos que se van a enviar
+                            var bytes = Buffer.byteLength(body, 'utf8');
+                            response.setHeader('Content-Length', bytes);
+                            //Status code 200: OK
+                            response.writeHead(200);
+                            response.end(body);
+                        } else {
+                            response.writeHead(200);
+                            response.end();
+                        }
+                    }
+                });
             });
             break;
         case "/info/":
@@ -115,8 +239,12 @@ var server = http.createServer(function(request, response){
                                     if (err) throw err;
                                     //Se prepara la data para insertar en la bitacora
                                     var consulta = "INSERT INTO bitacora (channel, url, requestType, DateAndTime, appID) VALUES ?";
+                                    //Se crea un moment
+                                    var postdate = moment(POST_DATA.date);
+                                    //Se parsea a un formato más entendible
+                                    var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
                                     //Los valores a insertar en la tabla de la bitacora
-                                    var values = [["EU", POST_DATA.url, "INFO", POST_DATA.date, result.insertId]];
+                                    var values = [["EU", POST_DATA.url, "INFO", fecha, result.insertId]];
                                     //Se hace la consulta a la base de datos
                                     conec.query(consulta, [values], function (err, result1) {
                                         if (err) throw err;
@@ -143,7 +271,7 @@ var server = http.createServer(function(request, response){
                                             //Se prepara la data para insertar en la bitacora de responses
                                             var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
                                             //Los valores a insertar en la tabla de la bitacora
-                                            var valus = [[POST_DATA.url, "INFO", JSON.stringify(json_obj), new Date().toISOString(), result1.insertId]];
+                                            var valus = [[POST_DATA.url, "INFO", JSON.stringify(json_obj), moment().format('YYYY-MM-DD HH:mm:ss'), result1.insertId]];
                                             //Se hace la consulta a la base de datos
                                             conec.query(consult, [valus], function (err, result) {
                                                 console.log("Filas insertadas en la tabla de responses: " + result.affectedRows);
@@ -155,8 +283,12 @@ var server = http.createServer(function(request, response){
                             else{//Si se encuentra en la tabla aplicaciones, entonces solamente se guarda en bitacora
                                 //Se prepara la data para insertar en la bitacora
                                 var consulta = "INSERT INTO bitacora (channel, url, requestType, DateAndTime, appID) VALUES ?";
+                                //Se crea un moment
+                                var postdate = moment(POST_DATA.date);
+                                //Se parsea a un formato más entendible
+                                var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
                                 //Los valores a insertar en la tabla de la bitacora
-                                var values = [["EU", POST_DATA.url, "INFO", POST_DATA.date, rows[0].appID]];
+                                var values = [["EU", POST_DATA.url, "INFO", fecha, rows[0].appID]];
                                 //Se hace la consulta a la base de datos
                                 conec.query(consulta, [values], function (err, result) {
                                     if (err) throw err;
@@ -183,7 +315,7 @@ var server = http.createServer(function(request, response){
                                         //Se prepara la data para insertar en la bitacora de responses
                                         var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
                                         //Los valores a insertar en la tabla de la bitacora
-                                        var valus = [[POST_DATA.url, "INFO", JSON.stringify(json_obj), new Date().toISOString(), result.insertId]];
+                                        var valus = [[POST_DATA.url, "INFO", JSON.stringify(json_obj), moment().format('YYYY-MM-DD HH:mm:ss'), result.insertId]];
                                         //Se hace la consulta a la base de datos
                                         conec.query(consult, [valus], function (err, result1) {
                                             console.log("Filas insertadas en la tabla de responses: " + result1.affectedRows);
@@ -203,7 +335,778 @@ var server = http.createServer(function(request, response){
                 break;
             }
         case "/search/":
+            if(request.method == 'POST') {
+                var cuerpo = '';
+                request.on('data', function (data){
+                    cuerpo += data;
+                });
+                request.on('end', function () {
+                    try {
+                        //Se obtiene el JSON enviado en el request
+                        let SEARCH_JSON = JSON.parse(cuerpo);
+                        console.log(SEARCH_JSON.search.id_hardware);
+                        console.log(SEARCH_JSON.search.start_date);
+                        console.log(SEARCH_JSON.search.finish_date);
+                        //Se crea un moment de la fecha inicio
+                        var inicio = moment(SEARCH_JSON.search.start_date);
+                        //Se crea un moment de la fecha final
+                        var final = moment(SEARCH_JSON.search.finish_date);
+                        //Se parsea a un formato más entendible
+                        var inicio_fecha = inicio.format('YYYY-MM-DD HH:mm:ss');
+                        var final_fecha = final.format('YYYY-MM-DD HH:mm:ss');
+                        //Select a la tabla de aplicaciones
+                        var mysqlQ = mysql.format("SELECT appID FROM aplicaciones WHERE requestID=?", [SEARCH_JSON.id]);
+                        conec.query(mysqlQ, function(err, rows, fields) {
+                            //Si no se encuentra nada en la tabla, entonces se inserta
+                            if (rows.length == 0) {
+                                //Se prepara el insert a la base de datos
+                                var quer = "INSERT INTO aplicaciones (requestID) VALUES ?";
+                                //Se guarda el id del request
+                                var valores = [[SEARCH_JSON.id]];
+                                conec.query(quer, [valores], function (err, result) {
+                                    if (err) throw err;
+                                    //Se prepara la data para insertar en la bitacora
+                                    var consulta = "INSERT INTO bitacora (channel, url, requestType, body, DateAndTime, appID) VALUES ?";
+                                    //Se crea un moment
+                                    var postdate = moment(SEARCH_JSON.date);
+                                    //Se parsea a un formato más entendible
+                                    var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                    //Los valores a insertar en la tabla de la bitacora
+                                    var values = [["EU", SEARCH_JSON.url, "SEARCH", JSON.stringify(SEARCH_JSON.search), fecha, result.insertId]];
+                                    //Se hace la consulta a la base de datos
+                                    conec.query(consulta, [values], function (err, result1) {
+                                        if (err) throw err;
+                                        console.log("Filas insertadas en la DB: " + result1.affectedRows);
+                                        //Se prepara el json para el response
+                                        var json_search = {
+                                            id: "MWApp_FernandoSagastume", url: "192.168.0.7:8081",
+                                            date: (new Date().toISOString()), search: {}, data: {}
+                                        };
+                                        /* Se hace una consulta a la base de datos para obtener los componentes del
+                                          dispositivo IOT. */
+                                        conec.query("SELECT * FROM hardware WHERE id = ?", [SEARCH_JSON.search.id_hardware], function (err, rows, fields) {
+                                            if (err) throw err;
+                                            conec.query("SELECT * FROM bitacora_vd WHERE DateAndTime >= ? AND DateAndTime <= ?", [inicio_fecha, final_fecha],
+                                                function (err1, rows1, fields1) {
+                                                    if (err) throw err1;
+                                                    //Se envia el componente y el tipo que es
+                                                    json_search["search"] = {
+                                                        id_hardware: SEARCH_JSON.search.id_hardware,
+                                                        type: rows[0].type
+                                                    }
+                                                    /* Se itera en las filas devueltas y a la vez se forma otro json
+                                                    para incluir en el json response. */
+                                                    for (var i = 0; i < rows1.length; i++) {
+                                                        var dateComponent = new Date(rows1[i].DateAndTime).toISOString();
+                                                        if (rows[0].type == "Output") {
+                                                            if (SEARCH_JSON.search.id_hardware == "LED_GREEN") {
+                                                                var aux = hex2bin(rows1[i].dataReceived.substring(1, 2));
+                                                                if (aux.charAt(aux.length - 2) == '0') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "false",
+                                                                        text: "Apagado"
+                                                                    };
+                                                                } else {
+                                                                    if (aux.charAt(aux.length - 2) == '1') {
+                                                                        //Se agrega a la llave de data
+                                                                        json_search.data[dateComponent] = {
+                                                                            status: "true",
+                                                                            text: "Encendido"
+                                                                        };
+                                                                    }
+                                                                }
+                                                            } else if (SEARCH_JSON.search.id_hardware == "LED_RED") {
+                                                                var aux = hex2bin(rows1[i].dataReceived.substring(1, 2));
+                                                                if (aux.charAt(aux.length - 3) == '0') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "false",
+                                                                        text: "Apagado"
+                                                                    };
+                                                                } else {
+                                                                    if (aux.charAt(aux.length - 3) == '1') {
+                                                                        //Se agrega a la llave de data
+                                                                        json_search.data[dateComponent] = {
+                                                                            status: "true",
+                                                                            text: "Encendido"
+                                                                        };
+                                                                    }
+                                                                }
+                                                            } else if (SEARCH_JSON.search.id_hardware == "LED_RGB") {
+                                                                var aux = hex2bin(rows1[i].dataReceived.substring(1, 2));
+                                                                if (aux.charAt(aux.length - 4) == '0') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "false",
+                                                                        text: "Apagado, no mostrando nada"
+                                                                    };
+                                                                } else {
+                                                                    if (aux.charAt(aux.length - 4) == '1') {
+                                                                        var aux1 = rows1[i].dataReceived.substring(11, 17);
+                                                                        var colorname = colores('#' + aux1);
+                                                                        //Se agrega a la llave de data
+                                                                        json_search.data[dateComponent] = {
+                                                                            status: "true",
+                                                                            text: "Mostrando el color " + colorname
+                                                                        };
+                                                                    }
+                                                                }
+                                                            } else if (SEARCH_JSON.search.id_hardware == "LCD_SONG") {
+                                                                var aux = hex2bin(rows1[i].dataReceived.substring(0, 1));
+                                                                if (aux.charAt(aux.length - 4) == '0') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "false",
+                                                                        text: "Pantalla apagada"
+                                                                    };
+                                                                } else {
+                                                                    if (aux.charAt(aux.length - 4) == '1') {
+                                                                        //Se agrega a la llave de data
+                                                                        json_search.data[dateComponent] = {
+                                                                            status: "true",
+                                                                            text: "Pantalla encendida"
+                                                                        };
+                                                                    }
+                                                                }
+                                                            }
+                                                        } else {
+                                                            if (SEARCH_JSON.search.id_hardware == "SLIDER_VOLUME") {
+                                                                var aux = rows1[i].dataReceived.substring(4, 6);
+                                                                var hexInt = parseInt(aux, 16);
+                                                                json_search.data[dateComponent] = {sensor: hexInt};
+                                                            } else if (SEARCH_JSON.search.id_hardware == "COLOR_PICKER") {
+                                                                var aux = rows1[i].dataReceived.substring(19, 25);
+                                                                var hexInt = parseInt(aux, 16);
+                                                                json_search.data[dateComponent] = {
+                                                                    sensor: hexInt,
+                                                                    text: "Color elegido: " + colores("#" + aux)
+                                                                };
+                                                            } else if (SEARCH_JSON.search.id_hardware == "MSG_SONG") {
+                                                                var aux = rows1[i].dataReceived.substring(25);
+                                                                var hexInt = parseInt(aux, 16);
+                                                                if (aux != "") {
+                                                                    var song = '';
+                                                                    for (var i = 0; i < hex.length; i += 2) {
+                                                                        song += String.fromCharCode(parseInt(aux.substr(i, 2), 16));
+                                                                    }
+                                                                    json_search.data[dateComponent] = {text: "Se escribió la canción " + song};
+                                                                } else {
+                                                                    json_search.data[dateComponent] = {text: "No se escribió ninguna canción"};
+                                                                }
+                                                            } else if (SEARCH_JSON.search.id_hardware == "SW_START") {
+                                                                var aux = hex2bin(rows1[i].dataReceived.substring(0, 1));
+                                                                if (aux.charAt(aux.length - 2) == '0') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "0",
+                                                                        text: "Botón no presionado"
+                                                                    };
+                                                                } else {
+                                                                    if (aux.charAt(aux.length - 2) == '1') {
+                                                                        //Se agrega a la llave de data
+                                                                        json_search.data[dateComponent] = {
+                                                                            status: "1",
+                                                                            text: "Botón presionado"
+                                                                        };
+                                                                    }
+                                                                }
+                                                            } else if (SEARCH_JSON.search.id_hardware == "SW_STOP") {
+                                                                var aux = hex2bin(rows1[i].dataReceived.substring(0, 1));
+                                                                if (aux.charAt(aux.length - 3) == '0') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "0",
+                                                                        text: "Botón no presionado"
+                                                                    };
+                                                                } else {
+                                                                    if (aux.charAt(aux.length - 3) == '1') {
+                                                                        //Se agrega a la llave de data
+                                                                        json_search.data[dateComponent] = {
+                                                                            status: "1",
+                                                                            text: "Botón presionado"
+                                                                        };
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    response.setHeader('Content-Type', 'application/json');
+                                                    //Se envía el JSON como el response
+                                                    response.end(JSON.stringify(json_search));
+                                                    //Se prepara la data para insertar en la bitacora de responses
+                                                    var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                    //Los valores a insertar en la tabla de la bitacora
+                                                    var valus = [[SEARCH_JSON.url, "SEARCH", JSON.stringify(json_search), moment().format('YYYY-MM-DD HH:mm:ss'), result1.insertId]];
+                                                    //Se hace la consulta a la base de datos
+                                                    conec.query(consult, [valus], function (err, result) {
+                                                        console.log("Filas insertadas en la tabla de responses: " + result.affectedRows);
+                                                    });
+                                                });
+                                        });
+                                    });
+                                });
+                            }else{
+                                //Se prepara la data para insertar en la bitacora
+                                var consulta = "INSERT INTO bitacora (channel, url, requestType, body, DateAndTime, appID) VALUES ?";
+                                //Se crea un moment
+                                var postdate = moment(SEARCH_JSON.date);
+                                //Se parsea a un formato más entendible
+                                var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                //Los valores a insertar en la tabla de la bitacora
+                                var values = [["EU", SEARCH_JSON.url, "SEARCH", JSON.stringify(SEARCH_JSON.search), fecha, rows[0].appID]];
+                                //Se hace la consulta a la base de datos
+                                conec.query(consulta, [values], function (err, result) {
+                                    if (err) throw err;
+                                    console.log("Filas insertadas en la DB: " + result.affectedRows);
+                                    //Se prepara el json para el response
+                                    var json_search = {
+                                        id: "MWApp_FernandoSagastume", url: "192.168.0.7:8081",
+                                        date: (new Date().toISOString()), search: {}, data: {}
+                                    };
+                                    /* Se hace una consulta a la base de datos para obtener los componentes del
+                                      dispositivo IOT. */
+                                    conec.query("SELECT * FROM hardware WHERE id = ?", [SEARCH_JSON.search.id_hardware], function (err, rows, fields) {
+                                        if (err) throw err;
+                                        conec.query("SELECT * FROM bitacora_vd WHERE DateAndTime >= ? AND DateAndTime <= ?", [inicio_fecha, final_fecha],
+                                            function (err1, rows1, fields1) {
+                                                if (err) throw err1;
+                                                //Se envia el componente y el tipo que es
+                                                json_search["search"] = {
+                                                    id_hardware: SEARCH_JSON.search.id_hardware,
+                                                    type: rows[0].type
+                                                }
+                                                /* Se itera en las filas devueltas y a la vez se forma otro json
+                                                para incluir en el json response. */
+                                                for (var i = 0; i < rows1.length; i++) {
+                                                    var dateComponent = new Date(rows1[i].DateAndTime).toISOString();
+                                                    if (rows[0].type == "Output") {
+                                                        if (SEARCH_JSON.search.id_hardware == "LED_GREEN") {
+                                                            var aux = hex2bin(rows1[i].dataReceived.substring(1, 2));
+                                                            if (aux.charAt(aux.length - 2) == '0') {
+                                                                //Se agrega a la llave de data
+                                                                json_search.data[dateComponent] = {
+                                                                    status: "false",
+                                                                    text: "Apagado"
+                                                                };
+                                                            } else {
+                                                                if (aux.charAt(aux.length - 2) == '1') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "true",
+                                                                        text: "Encendido"
+                                                                    };
+                                                                }
+                                                            }
+                                                        } else if (SEARCH_JSON.search.id_hardware == "LED_RED") {
+                                                            var aux = hex2bin(rows1[i].dataReceived.substring(1, 2));
+                                                            if (aux.charAt(aux.length - 3) == '0') {
+                                                                //Se agrega a la llave de data
+                                                                json_search.data[dateComponent] = {
+                                                                    status: "false",
+                                                                    text: "Apagado"
+                                                                };
+                                                            } else {
+                                                                if (aux.charAt(aux.length - 3) == '1') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "true",
+                                                                        text: "Encendido"
+                                                                    };
+                                                                }
+                                                            }
+                                                        } else if (SEARCH_JSON.search.id_hardware == "LED_RGB") {
+                                                            var aux = hex2bin(rows1[i].dataReceived.substring(1, 2));
+                                                            if (aux.charAt(aux.length - 4) == '0') {
+                                                                //Se agrega a la llave de data
+                                                                json_search.data[dateComponent] = {
+                                                                    status: "false",
+                                                                    text: "Apagado, no mostrando nada"
+                                                                };
+                                                            } else {
+                                                                if (aux.charAt(aux.length - 4) == '1') {
+                                                                    var aux1 = rows1[i].dataReceived.substring(11, 17);
+                                                                    var colorname = colores('#' + aux1);
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "true",
+                                                                        text: "Mostrando el color " + colorname
+                                                                    };
+                                                                }
+                                                            }
+                                                        } else if (SEARCH_JSON.search.id_hardware == "LCD_SONG") {
+                                                            var aux = hex2bin(rows1[i].dataReceived.substring(0, 1));
+                                                            if (aux.charAt(aux.length - 4) == '0') {
+                                                                //Se agrega a la llave de data
+                                                                json_search.data[dateComponent] = {
+                                                                    status: "false",
+                                                                    text: "Pantalla apagada"
+                                                                };
+                                                            } else {
+                                                                if (aux.charAt(aux.length - 4) == '1') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "true",
+                                                                        text: "Pantalla encendida"
+                                                                    };
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        if (SEARCH_JSON.search.id_hardware == "SLIDER_VOLUME") {
+                                                            var aux = rows1[i].dataReceived.substring(4, 6);
+                                                            var hexInt = parseInt(aux, 16);
+                                                            json_search.data[dateComponent] = {sensor: hexInt};
+                                                        } else if (SEARCH_JSON.search.id_hardware == "COLOR_PICKER") {
+                                                            var aux = rows1[i].dataReceived.substring(19, 25);
+                                                            var hexInt = parseInt(aux, 16);
+                                                            json_search.data[dateComponent] = {
+                                                                sensor: hexInt,
+                                                                text: "Color elegido: " + colores("#" + aux)
+                                                            };
+                                                        } else if (SEARCH_JSON.search.id_hardware == "MSG_SONG") {
+                                                            var aux = rows1[i].dataReceived.substring(25);
+                                                            var hexInt = parseInt(aux, 16);
+                                                            if (aux != "") {
+                                                                var song = '';
+                                                                for (var i = 0; i < hex.length; i += 2) {
+                                                                    song += String.fromCharCode(parseInt(aux.substr(i, 2), 16));
+                                                                }
+                                                                json_search.data[dateComponent] = {text: "Se escribió la canción " + song};
+                                                            } else {
+                                                                json_search.data[dateComponent] = {text: "No se escribió ninguna canción"};
+                                                            }
+                                                        } else if (SEARCH_JSON.search.id_hardware == "SW_START") {
+                                                            var aux = hex2bin(rows1[i].dataReceived.substring(0, 1));
+                                                            if (aux.charAt(aux.length - 3) == '0') {
+                                                                //Se agrega a la llave de data
+                                                                json_search.data[dateComponent] = {
+                                                                    status: "0",
+                                                                    text: "Botón no presionado"
+                                                                };
+                                                            } else {
+                                                                if (aux.charAt(aux.length - 3) == '1') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "1",
+                                                                        text: "Botón presionado"
+                                                                    };
+                                                                }
+                                                            }
+                                                        } else if (SEARCH_JSON.search.id_hardware == "SW_STOP") {
+                                                            var aux = hex2bin(rows1[i].dataReceived.substring(0, 1));
+                                                            if (aux.charAt(aux.length - 2) == '0') {
+                                                                //Se agrega a la llave de data
+                                                                json_search.data[dateComponent] = {
+                                                                    status: "0",
+                                                                    text: "Botón no presionado"
+                                                                };
+                                                            } else {
+                                                                if (aux.charAt(aux.length - 2) == '1') {
+                                                                    //Se agrega a la llave de data
+                                                                    json_search.data[dateComponent] = {
+                                                                        status: "1",
+                                                                        text: "Botón presionado"
+                                                                    };
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                response.setHeader('Content-Type', 'application/json');
+                                                //Se envía el JSON como el response
+                                                response.end(JSON.stringify(json_search));
+                                                //Se prepara la data para insertar en la bitacora de responses
+                                                var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                //Los valores a insertar en la tabla de la bitacora
+                                                var valus = [[SEARCH_JSON.url, "SEARCH", JSON.stringify(json_search), moment().format('YYYY-MM-DD HH:mm:ss'), result.insertId]];
+                                                //Se hace la consulta a la base de datos
+                                                conec.query(consult, [valus], function (err, result1) {
+                                                    console.log("Filas insertadas en la tabla de responses: " + result1.affectedRows);
+                                                });
+                                            });
+                                    });
+                                });
+                            }
+                        });
+                    } catch (error) {
+                        console.error(error.message);
+                    }
+                });
+                break;
+            }
+            else{
+                break;
+            }
+        case "/change/":
+            if(request.method == 'POST') {
+                var cuerpo = '';
+                request.on('data', function (data){
+                    cuerpo += data;
+                });
+                request.on('end', function () {
+                    try {
+                        //Se obtiene el JSON enviado en el request
+                        let CHANGE_JSON = JSON.parse(cuerpo);
+                        //Se obtiene el componente de hw que se desea cambiar
+                        var hw = Object.keys(CHANGE_JSON.change)[0];
+                        //Select a la tabla de aplicaciones
+                        var mysqlQ = mysql.format("SELECT appID FROM aplicaciones WHERE requestID=?", [CHANGE_JSON.id]);
+                        conec.query(mysqlQ, function(err, rows, fields) {
+                            //Se prepara la data para insertar en la bitacora
+                            var consulta = "INSERT INTO bitacora (channel, url, requestType, body, DateAndTime, appID) VALUES ?";
+                            //Se crea un moment
+                            var postdate = moment(CHANGE_JSON.date);
+                            //Se parsea a un formato más entendible
+                            var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                            //Los valores a insertar en la tabla de la bitacora
+                            var values = [["EU", CHANGE_JSON.url, "CHANGE", JSON.stringify(CHANGE_JSON.change), fecha, rows[0].appID]];
+                            //Se hace la consulta a la base de datos
+                            conec.query(consulta, [values], function (err, result) {
+                                if (err) throw err;
+                                console.log("Filas insertadas en la DB: " + result.affectedRows);
+                                //Se prepara el json para el response
+                                var json_change = {
+                                    id: "MWApp_FernandoSagastume", url: "192.168.0.9:8081",
+                                    date: (new Date().toISOString()), status: ""
+                                };
+                                /* Se hace una consulta a la base de datos para obtener los componentes del
+                                  dispositivo IOT. */
+                            conec.query("SELECT * FROM hardware WHERE id = ?", [hw], function (err, rows1, fields) {
+                                if (err) throw err;
+                                if(rows1.length == 0){
+                                    json_change["status"] = "ERROR"
+                                    response.setHeader('Content-Type', 'application/json');
+                                    //Se envía el JSON como el response
+                                    response.end(JSON.stringify(json_change));
+                                    //Se prepara la data para insertar en la bitacora de responses
+                                    var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                    //Los valores a insertar en la tabla de la bitacora
+                                    var valus = [[CHANGE_JSON.url, "CHANGE", JSON.stringify(json_change), moment().format('YYYY-MM-DD HH:mm:ss'), result.insertId]];
+                                    //Se hace la consulta a la base de datos
+                                    conec.query(consult, [valus], function (err, result1) {
+                                        console.log("Filas insertadas en la tabla de responses: " + result1.affectedRows);
+                                    });
+                                }else{
+                                    conec.query("SELECT * FROM bitacora_vd ORDER BY bitacora_VD_ID DESC", function (err1, rows2, fields1) {
+                                            if (rows1[0].type == "Output") {
+                                                 if (hw == "LED_RGB") {
+                                                    //Se obtiene el estado del VD más reciente
+                                                    var aux = hex2bin(rows2[0].dataReceived.substring(1, 2));
+                                                     //console.log("DATA RECEIVED 1:", aux.charAt(aux.length - 4));
+                                                     //console.log("STATUS:", CHANGE_JSON.change[hw].status);
+                                                    if ((aux.charAt(aux.length - 4) == '0') && (CHANGE_JSON.change[hw].status)) {
+                                                        //Se verifica que el led rojo no este encendido
+                                                        if(aux.charAt(aux.length - 3) != '1'){
+                                                            VDChanges = true;
+                                                            var dataRecibida = rows2[0].dataReceived;
+                                                            VDNewData = setCharAt(dataRecibida, 1, 'A');
+                                                            //Valor del color picker
+                                                            var aux1 = dataRecibida.substring(18, 24);
+                                                            var cont = 0;
+                                                            for(var i = 11; i < 17; i++){
+                                                                VDNewData = setCharAt(VDNewData, i, aux1.charAt(cont));
+                                                                cont++;
+                                                            }
+                                                            //Select a la tabla de virtual devices
+                                                            var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                                            conec.query(mysqli, function(err, rows, fields) {
+                                                                //Se prepara el insert a la base de datos
+                                                                var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                                                //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                                                var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
+                                                                conec.query(query, [vals], function (err, result) {
+                                                                    console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
+                                                                });
+                                                            });
+                                                        }
+                                                    } else {
+                                                        if (aux.charAt(aux.length - 4) == '1' && (!CHANGE_JSON.change[hw].status)) {
+                                                            //Se verifica que el led rojo no esté encendido
+                                                            if(aux.charAt(aux.length - 3) != '1'){
+                                                                VDChanges = true;
+                                                                var dataRecibida = rows2[0].dataReceived;
+                                                                VDNewData = setCharAt(dataRecibida, 1, '2');
+                                                                //Se llena de ceros el color del RGB
+                                                                for(var i = 11; i < 17; i++){
+                                                                    VDNewData = setCharAt(VDNewData, i, '0');
+                                                                    cont++;
+                                                                }
+                                                                //Select a la tabla de virtual devices
+                                                                var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                                                conec.query(mysqli, function(err, rows, fields) {
+                                                                    //Se prepara el insert a la base de datos
+                                                                    var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                                                    //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                                                    var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
+                                                                    conec.query(query, [vals], function (err, result) {
+                                                                        console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
+                                                                    });
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                     json_change["status"] = "OK"
+                                                     response.setHeader('Content-Type', 'application/json');
+                                                     //Se envía el JSON como el response
+                                                     response.end(JSON.stringify(json_change));
+                                                }
+                                                 else if (hw == "LCD_SONG") {
+                                                     //Se obtiene el estado del VD más reciente
+                                                     var aux = hex2bin(rows2[0].dataReceived.substring(0, 1));
+                                                     var leds = hex2bin(rows2[0].dataReceived.substring(1, 2));
+                                                     //console.log("DATA RECEIVED 1:", aux.charAt(aux.length - 4));
+                                                     //console.log("STATUS:", CHANGE_JSON.change[hw].status);
+                                                     if ((aux.charAt(aux.length - 4) == '0') && (CHANGE_JSON.change[hw].status)) {
+                                                         //Se hacen los cambios para el VD
+                                                         if(leds.charAt(leds.length - 3) != '1'){
+                                                             VDChanges = true;
+                                                             var dataRecibida = rows2[0].dataReceived;
+                                                             //Se verifica que el Switch de pausa (SW0) esté presionado
+                                                             if(aux.charAt(aux.length - 3) == '1'){
+                                                                 VDNewData = setCharAt(dataRecibida, 0, 'C');
+                                                             }
+                                                             //Se verifica que el Switch de inicio (SW1) esté presionado
+                                                             else if(aux.charAt(aux.length - 2) == '1'){
+                                                                 VDNewData = setCharAt(dataRecibida, 0, 'A');
+                                                             }
+                                                             else{
+                                                                 VDNewData = setCharAt(dataRecibida, 0, '8');
+                                                             }
+                                                             //Select a la tabla de virtual devices
+                                                             var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                                             conec.query(mysqli, function(err, rows, fields) {
+                                                                 //Se prepara el insert a la base de datos
+                                                                 var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                                                 //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                                                 var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
+                                                                 conec.query(query, [vals], function (err, result) {
+                                                                     console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
+                                                                 });
+                                                             });
+                                                         }
+                                                     } else {
+                                                         if (aux.charAt(aux.length - 4) == '1' && (!CHANGE_JSON.change[hw].status)) {
+                                                             //Se hacen los cambios para el VD
+                                                             if(aux.charAt(aux.length - 3) != '1'){
+                                                                 VDChanges = true;
+                                                                 var dataRecibida = rows2[0].dataReceived;
+                                                                 //Se verifica que el Switch de pausa (SW0) esté presionado
+                                                                 if(aux.charAt(aux.length - 3) == '1'){
+                                                                     VDNewData = setCharAt(dataRecibida, 0, '4');
+                                                                 }
+                                                                 //Se verifica que el Switch de inicio (SW1) esté presionado
+                                                                 else if(aux.charAt(aux.length - 2) == '1'){
+                                                                     VDNewData = setCharAt(dataRecibida, 0, '2');
+                                                                 }
+                                                                 else{
+                                                                     VDNewData = setCharAt(dataRecibida, 0, '0');
+                                                                 }
+                                                                 //Select a la tabla de virtual devices
+                                                                 var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                                                 conec.query(mysqli, function(err, rows, fields) {
+                                                                     //Se prepara el insert a la base de datos
+                                                                     var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                                                     //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                                                     var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
+                                                                     conec.query(query, [vals], function (err, result) {
+                                                                         console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
+                                                                     });
+                                                                 });
+                                                             }
+                                                         }
+                                                     }
+                                                     json_change["status"] = "OK"
+                                                     response.setHeader('Content-Type', 'application/json');
+                                                     //Se envía el JSON como el response
+                                                     response.end(JSON.stringify(json_change));
+                                                 }
+                                                 else if (hw == "LED_GREEN") {
+                                                     //Se obtiene el estado del VD más reciente
+                                                     var leds = hex2bin(rows2[0].dataReceived.substring(1, 2));
+                                                     if ((leds.charAt(leds.length - 2) == '0') && (CHANGE_JSON.change[hw].status)) {
+                                                         //Se hacen los cambios para el VD
+                                                         if(leds.charAt(leds.length - 3) == '1'){
+                                                             VDChanges = true;
+                                                             var dataRecibida = rows2[0].dataReceived;
+                                                             //Se enciende el LED verde, y lo demás se deja en 0
+                                                             VDNewData = "020000000000000000000000";
+                                                             //Select a la tabla de virtual devices
+                                                             var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                                             conec.query(mysqli, function(err, rows, fields) {
+                                                                 //Se prepara el insert a la base de datos
+                                                                 var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                                                 //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                                                 var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
+                                                                 conec.query(query, [vals], function (err, result) {
+                                                                     console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
+                                                                 });
+                                                             });
+                                                         }
+                                                     } else {
+                                                         if (leds.charAt(leds.length - 2) == '1' && (!CHANGE_JSON.change[hw].status)) {
+                                                             //Se hacen los cambios para el VD
+                                                             VDChanges = true;
+                                                             var dataRecibida = rows2[0].dataReceived;
+                                                             //Se apaga el LED verde, se enciende el LED rojo, y lo demás se deja en 0
+                                                             VDNewData = "040000000000000000000000";
+                                                             //Select a la tabla de virtual devices
+                                                             var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                                             conec.query(mysqli, function(err, rows, fields) {
+                                                                 //Se prepara el insert a la base de datos
+                                                                 var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                                                 //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                                                 var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
+                                                                 conec.query(query, [vals], function (err, result) {
+                                                                     console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
+                                                                 });
+                                                             });
+                                                         }
+                                                     }
+                                                     json_change["status"] = "OK"
+                                                     response.setHeader('Content-Type', 'application/json');
+                                                     //Se envía el JSON como el response
+                                                     response.end(JSON.stringify(json_change));
+                                                 }
+                                                 else if (hw == "LED_RED") {
+                                                     //Se obtiene el estado del VD más reciente
+                                                     var leds = hex2bin(rows2[0].dataReceived.substring(1, 2));
+                                                     if ((leds.charAt(leds.length - 3) == '0') && (CHANGE_JSON.change[hw].status)) {
+                                                         //Se hacen los cambios para el VD
+                                                         if(leds.charAt(leds.length - 2) == '1'){
+                                                             VDChanges = true;
+                                                             var dataRecibida = rows2[0].dataReceived;
+                                                             //Se enciende el LED rojo y se apaga el verde, y lo demás se deja en 0
+                                                             VDNewData = "040000000000000000000000";
+                                                             //Select a la tabla de virtual devices
+                                                             var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                                             conec.query(mysqli, function(err, rows, fields) {
+                                                                 //Se prepara el insert a la base de datos
+                                                                 var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                                                 //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                                                 var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
+                                                                 conec.query(query, [vals], function (err, result) {
+                                                                     console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
+                                                                 });
+                                                             });
+                                                         }
+                                                     } else {
+                                                         if (leds.charAt(leds.length - 3) == '1' && (!CHANGE_JSON.change[hw].status)) {
+                                                             //Se hacen los cambios para el VD
+                                                             VDChanges = true;
+                                                             var dataRecibida = rows2[0].dataReceived;
+                                                             //Se enciende el LED verde, se apaga el LED rojo, y lo demás se deja en 0
+                                                             VDNewData = "020000000000000000000000";
+                                                             //Select a la tabla de virtual devices
+                                                             var mysqli = mysql.format("SELECT vdID FROM virtualdevices WHERE requestID=?", ["VirtualDeviceFJSC"]);
+                                                             conec.query(mysqli, function(err, rows, fields) {
+                                                                 //Se prepara el insert a la base de datos
+                                                                 var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
+                                                                 //Se guarda el request del virtual device en la bitacora como init por ser el primero
+                                                                 var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
+                                                                 conec.query(query, [vals], function (err, result) {
+                                                                     console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
+                                                                 });
+                                                             });
+                                                         }
+                                                     }
+                                                     json_change["status"] = "OK"
+                                                     response.setHeader('Content-Type', 'application/json');
+                                                     //Se envía el JSON como el response
+                                                     response.end(JSON.stringify(json_change));
+                                                 }
+                                                 else{
+                                                     json_change["status"] = "ERROR";
+                                                     response.setHeader('Content-Type', 'application/json');
+                                                     //Se envía el JSON como el response
+                                                     response.end(JSON.stringify(json_change));
+                                                 }
+                                                //Se prepara la data para insertar en la bitacora de responses
+                                                var cconsult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                //Los valores a insertar en la tabla de la bitacora
+                                                var cvalus = [[CHANGE_JSON.url, "CHANGE", JSON.stringify(json_change), moment().format('YYYY-MM-DD HH:mm:ss'), result.insertId]];
+                                                //Se hace la consulta a la base de datos
+                                                conec.query(cconsult, [cvalus], function (err, result1) {
+                                                    console.log("Filas insertadas en la tabla de responses: " + result1.affectedRows);
+                                                });
+                                            }
+                                            else if (rows1[0].type == "Input") {
+                                                json_change["status"] = "ERROR";
+                                                response.setHeader('Content-Type', 'application/json');
+                                                //Se envía el JSON como el response
+                                                response.end(JSON.stringify(json_change));
+                                                //Se prepara la data para insertar en la bitacora de responses
+                                                var cconsult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                //Los valores a insertar en la tabla de la bitacora
+                                                var cvalus = [[CHANGE_JSON.url, "CHANGE", JSON.stringify(json_change), moment().format('YYYY-MM-DD HH:mm:ss'), result.insertId]];
+                                                //Se hace la consulta a la base de datos
+                                                conec.query(cconsult, [cvalus], function (err, result1) {
+                                                    console.log("Filas insertadas en la tabla de responses: " + result1.affectedRows);
+                                                });
+                                            }
+                                    });
+                                }
+                            });
+                        });
+                    });
 
+                    } catch (error) {
+                        //Se obtiene el JSON enviado en el request
+                        let CHANGE_JSON = JSON.parse(cuerpo);
+                        var json_change = {
+                            id: "MWApp_FernandoSagastume", url: "192.168.0.9:8081",
+                            date: (new Date().toISOString()), status: "ERROR"
+                        };
+                        response.setHeader('Content-Type', 'application/json');
+                        //Se envía el JSON como el response
+                        response.end(JSON.stringify(json_change));
+                        conec.query("SELECT MAX(binnacleID) AS MAXIMO FROM bitacora WHERE url = ? and requestType = ?", [CHANGE_JSON.url, "CHANGE"],
+                            function (err, rows, fields) {
+                            if (err) throw err;
+                                //Se prepara la data para insertar en la bitacora de responses
+                                var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                //Los valores a insertar en la tabla de la bitacora
+                                var valus = [[CHANGE_JSON.url, "CHANGE", JSON.stringify(json_change), moment().format('YYYY-MM-DD HH:mm:ss'), rows.MAXIMO]];
+                                //Se hace la consulta a la base de datos
+                                conec.query(consult, [valus], function (err, result1) {
+                                    console.log("Filas insertadas en la tabla de responses: " + result1.affectedRows);
+                                });
+                        });
+                        console.error(error.message);
+                    }
+                });
+                break;
+            }else{
+                break;
+            }
+        case "/prueba":
+            if(request.method == 'POST') {
+                var cuerpo = '';
+                request.on('data', function (data) {
+                    cuerpo += data;
+                });
+                request.on('end', function () {
+                    try {
+                        //Se obtiene el JSON enviado en el request
+                        let CHANGE_JSON = JSON.parse(cuerpo);
+                        //Se obtiene el componente de hw que se desea cambiar
+                        var hw = Object.keys(CHANGE_JSON.change)[0];
+                        //Se preparan los campos del header de la respuesta
+                        response.setHeader('Server',  'CC8');
+                        response.setHeader('Access-Control-Allow-Origin', '*');
+                        response.setHeader('Content-type', 'text/plain');
+                        //Se convierte en bytes los datos que se van a enviar
+                        var bytes = Buffer.byteLength(hw, 'utf8');
+                        response.setHeader('Content-Length', bytes);
+                        //Status code 200: OK
+                        response.writeHead(200);
+                        response.end(hw);
+                        console.log(CHANGE_JSON.change[hw])
+                    } catch (error) {
+                        console.error(error.message);
+                    }
+                });
+            }
             break;
         default:
             //Se prepara el archivo a ser enviado como respuesta
@@ -219,11 +1122,12 @@ var server = http.createServer(function(request, response){
             response.writeHead(404);
             //Se envía el sitio web como respuesta
             response.end(html);
-            var app = express();
             break;
     }
 });
 
 server.listen(8081, function(){
-    console.log('Se inició el server a las ' + new Date().toISOString() + ', escuchando el puerto 8081');
+    //console.log(new Date('2020-11-06 14:00:00').toISOString());
+    //console.log(new Date('2020-11-06 15:00:00').toISOString());
+    console.log('Se inició el server a las ' + moment().format('YYYY-MM-DD HH:mm:ss') + ', escuchando el puerto 8081');
 });
