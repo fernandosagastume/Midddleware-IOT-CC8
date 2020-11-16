@@ -8,6 +8,7 @@ var mysql = require('mysql');
 var express = require('express');
 var querys = require('querystring');
 var moment = require('moment');
+var ngrok = require('ngrok');
 var colores = require('hex-to-color-name');
 let VDChanges = false;
 let eventCreated = false;
@@ -47,6 +48,7 @@ conec.connect(err => {
 
 var server = http.createServer(function(request, response){
     var path = url.parse(request.url).pathname;
+    console.log(request.url);
     switch(path){
         case "/":
             var referrer = request.headers.referer;
@@ -63,15 +65,15 @@ var server = http.createServer(function(request, response){
                         console.log("Filas insertadas en tabla de virtual devices: " + result.affectedRows);
                         //Se prepara el insert a la base de datos
                         var queryyy = "INSERT INTO hardware (id, vdID, type, tag) VALUES ?";
-                        var vals1 = [["SLIDER_VOLUME", result.insertId, "Input", "Slider de volumen"],
-                                     ["MSG_SONG", result.insertId, "Input", "Texto de la canción"],
-                                     ["LCD_SONG", result.insertId, "Output", "Display de canciones"],
-                                     ["COLOR_PICKER", result.insertId, "Input", "Selector de colores"],
-                                     ["LED_RGB", result.insertId, "Output", "Luz de efecto de bocina"],
-                                     ["LED_GREEN", result.insertId, "Output", "Luz dispositivo encendido"],
-                                     ["LED_RED", result.insertId, "Output", "Luz dispositivo apagado"],
-                                     ["SW_START", result.insertId, "Input", "Botón de start"],
-                                     ["SW_STOP", result.insertId, "Input", "Botón de stop"]
+                        var vals1 = [["SLIDER_VOLUME", result.insertId, "input", "Slider de volumen"],
+                                     ["MSG_SONG", result.insertId, "input", "Texto de la canción"],
+                                     ["LCD_SONG", result.insertId, "output", "Display de canciones"],
+                                     ["COLOR_PICKER", result.insertId, "input", "Selector de colores"],
+                                     ["LED_RGB", result.insertId, "output", "Luz de efecto de bocina"],
+                                     ["LED_GREEN", result.insertId, "output", "Luz dispositivo encendido"],
+                                     ["LED_RED", result.insertId, "output", "Luz dispositivo apagado"],
+                                     ["SW_START", result.insertId, "input", "Botón de start"],
+                                     ["SW_STOP", result.insertId, "input", "Botón de stop"]
                                     ];
                         conec.query(queryyy, [vals1], function (err, result) {
                             console.log("Filas insertadas en tabal de hardware: " + result.affectedRows);
@@ -200,9 +202,11 @@ var server = http.createServer(function(request, response){
                                 var query = "INSERT INTO bitacora_vd (DateAndTime, dataReceived, vdID) VALUES ?";
                                 //Se guarda el request del virtual device en la bitacora como init por ser el primero
                                 var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), body, rowsVD[0].vdID]];
-                                conec.query(query, [vals], function (err2, result2) {
-                                    console.log("Bitacora VD cambiada por EU: " + result2.affectedRows);
-                                });
+                                if(body.length > 0) {
+                                    conec.query(query, [vals], function (err2, result2) {
+                                        console.log("Bitacora VD cambiada por EU: " + result2.affectedRows);
+                                    });
+                                }
                             });
                             //Se convierte en bytes los datos que se van a enviar
                             var bytes = Buffer.byteLength(body, 'utf8');
@@ -270,11 +274,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -329,8 +333,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                            if(elseConditional.url == ipAddress){
                                                                var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                                conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -338,7 +392,7 @@ var server = http.createServer(function(request, response){
                                                                    if (rows2.length == 0) {
                                                                        checkCond = false;
                                                                    } else {
-                                                                       if (rows2[0].type == "Input") {
+                                                                       if (rows2[0].type == "input") {
                                                                            //Error, no puede ser input, debe de ser output el change
                                                                            checkCond = false;
                                                                        }else{//output
@@ -394,6 +448,55 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                });
                                                            }
+                                                           else{//Evento externo
+                                                               var idComp = elseConditional.id;
+                                                               //Se crea el JSON para enviar el change
+                                                               let bodyToSend = {
+                                                                   "id": "MWApp_FernandoSagastume",
+                                                                   "url": ipAddress,
+                                                                   "date": new Date().toISOString(),
+                                                                   "change": {}
+                                                               };
+                                                               if(elseConditional.status && elseConditional.text) {
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status,
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                               else{
+                                                                   if(elseConditional.status){
+                                                                       bodyToSend.change[idComp] = {
+                                                                           "status": elseConditional.status
+                                                                       };
+                                                                   }
+                                                                   else if(elseConditional.text){
+                                                                       bodyToSend.change[idComp] = {
+                                                                           "text": elseConditional.text
+                                                                       };
+                                                                   }
+                                                               }
+                                                               let options = {
+                                                                   hostname: thenConditional.url,
+                                                                   path: "/change/",
+                                                                   method: "POST",
+                                                                   headers: {
+                                                                       "Content-Type": "application/json",
+                                                                       "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                                   }
+                                                               }
+                                                               //Se envia el request para el change
+                                                               http.request(options, res => {
+                                                                   let dataR = "";
+                                                                   res.on("data", d => {
+                                                                       dataR += d;
+                                                                   })
+                                                                   res.on("end", () => {
+                                                                       console.log(dataR);
+                                                                   })
+                                                               })
+                                                                   .on("error", console.error)
+                                                                   .end(JSON.stringify(bodyToSend));
+                                                           }
                                                    }
                                                }
                                                else if(ifConditional.left.id == "SLIDER_VOLUME"){
@@ -404,11 +507,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -463,8 +566,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -472,7 +625,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -527,6 +680,55 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
                                                        }
                                                    }
                                                }
@@ -539,11 +741,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -598,8 +800,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -607,7 +859,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -663,6 +915,55 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
                                                }
                                                else if(ifConditional.left.id == "SW_START"){
@@ -674,11 +975,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -733,8 +1034,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -742,7 +1093,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -797,6 +1148,55 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
                                                        }
                                                    }
                                                }
@@ -813,11 +1213,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -872,16 +1272,66 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -937,8 +1387,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SLIDER_VOLUME"){
+                                               }
+                                               else if(ifConditional.left.id == "SLIDER_VOLUME"){
                                                    var aux = data.substring(4,6);
                                                    var hexInt = parseInt(aux, 16);
                                                    if(ifConditional.right.sensor != hexInt){
@@ -946,11 +1446,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1005,8 +1505,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -1014,7 +1564,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1070,8 +1620,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_STOP"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_STOP"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var stop = aux.charAt(aux.length-3);
                                                    var hexInt = parseInt(stop);
@@ -1080,11 +1680,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1139,8 +1739,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -1148,7 +1798,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1204,8 +1854,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_START"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_START"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var start = aux.charAt(aux.length-2);
                                                    var hexInt = parseInt(start);
@@ -1214,11 +1914,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1273,8 +1973,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -1282,7 +2032,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1338,8 +2088,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "MSG_SONG"){
+                                               }
+                                               else if(ifConditional.left.id == "MSG_SONG"){
                                                    var aux = data.substring(25);
                                                }
                                                break;
@@ -1352,11 +2152,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1411,16 +2211,66 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1476,8 +2326,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SLIDER_VOLUME"){
+                                               }
+                                               else if(ifConditional.left.id == "SLIDER_VOLUME"){
                                                    var aux = data.substring(4,6);
                                                    var hexInt = parseInt(aux, 16);
                                                    if(ifConditional.right.sensor < hexInt){
@@ -1485,11 +2385,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1544,8 +2444,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -1553,7 +2503,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1609,8 +2559,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_STOP"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_STOP"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var stop = aux.charAt(aux.length-3);
                                                    var hexInt = parseInt(stop);
@@ -1619,11 +2619,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1678,8 +2678,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -1687,7 +2737,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1743,8 +2793,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_START"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_START"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var start = aux.charAt(aux.length-2);
                                                    var hexInt = parseInt(start);
@@ -1753,11 +2853,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1812,8 +2912,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -1821,7 +2971,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1877,9 +3027,59 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "MSG_SONG"){
-                                                   checkCond = false;
+                                               }
+                                               else if(ifConditional.left.id == "MSG_SONG"){
+                                                   var aux = data.substring(25);
                                                }
                                                break;
                                            case ">":
@@ -1891,11 +3091,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -1950,16 +3150,66 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2015,8 +3265,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SLIDER_VOLUME"){
+                                               }
+                                               else if(ifConditional.left.id == "SLIDER_VOLUME"){
                                                    var aux = data.substring(4,6);
                                                    var hexInt = parseInt(aux, 16);
                                                    if(ifConditional.right.sensor > hexInt){
@@ -2024,11 +3324,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2083,8 +3383,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -2092,7 +3442,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2148,8 +3498,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_STOP"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_STOP"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var stop = aux.charAt(aux.length-3);
                                                    var hexInt = parseInt(stop);
@@ -2158,11 +3558,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2217,8 +3617,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -2226,7 +3676,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2282,8 +3732,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_START"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_START"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var start = aux.charAt(aux.length-2);
                                                    var hexInt = parseInt(start);
@@ -2292,11 +3792,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2351,8 +3851,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -2360,7 +3910,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2416,9 +3966,59 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "MSG_SONG"){
-                                                   checkCond = false;
+                                               }
+                                               else if(ifConditional.left.id == "MSG_SONG"){
+                                                   var aux = data.substring(25);
                                                }
                                                break;
                                            case "<=":
@@ -2430,11 +4030,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2489,16 +4089,66 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2554,8 +4204,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SLIDER_VOLUME"){
+                                               }
+                                               else if(ifConditional.left.id == "SLIDER_VOLUME"){
                                                    var aux = data.substring(4,6);
                                                    var hexInt = parseInt(aux, 16);
                                                    if(ifConditional.right.sensor <= hexInt){
@@ -2563,11 +4263,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2622,8 +4322,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -2631,7 +4381,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2687,8 +4437,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_STOP"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_STOP"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var stop = aux.charAt(aux.length-3);
                                                    var hexInt = parseInt(stop);
@@ -2697,11 +4497,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2756,8 +4556,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -2765,7 +4615,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2821,8 +4671,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_START"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_START"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var start = aux.charAt(aux.length-2);
                                                    var hexInt = parseInt(start);
@@ -2831,11 +4731,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2890,8 +4790,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -2899,7 +4849,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -2955,9 +4905,59 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "MSG_SONG"){
-                                                   checkCond = false;
+                                               }
+                                               else if(ifConditional.left.id == "MSG_SONG"){
+                                                   var aux = data.substring(25);
                                                }
                                                break;
                                            case ">=":
@@ -2969,11 +4969,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -3028,16 +5028,66 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -3093,8 +5143,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SLIDER_VOLUME"){
+                                               }
+                                               else if(ifConditional.left.id == "SLIDER_VOLUME"){
                                                    var aux = data.substring(4,6);
                                                    var hexInt = parseInt(aux, 16);
                                                    if(ifConditional.right.sensor >= hexInt){
@@ -3102,11 +5202,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -3161,8 +5261,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -3170,7 +5320,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -3226,8 +5376,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_STOP"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_STOP"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var stop = aux.charAt(aux.length-3);
                                                    var hexInt = parseInt(stop);
@@ -3236,11 +5436,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -3295,8 +5495,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -3304,7 +5554,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -3360,8 +5610,58 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "SW_START"){
+                                               }
+                                               else if(ifConditional.left.id == "SW_START"){
                                                    var aux = hex2bin(data.substring(0,1));
                                                    var start = aux.charAt(aux.length-2);
                                                    var hexInt = parseInt(start);
@@ -3370,11 +5670,11 @@ var server = http.createServer(function(request, response){
                                                        if(thenConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [thenConditional.id], function (err2, rows2, fields2) {
-                                                               if (err) throw err;
+                                                               if (err2) throw err2;
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -3429,8 +5729,58 @@ var server = http.createServer(function(request, response){
                                                                    }
                                                                }
                                                            });
-                                                       }//Falta agregar el else para cuando sea un MW externo
-                                                   }else{//Si no se cumple la condición entonces
+                                                       }
+                                                       else{//Evento externo
+                                                           var idComp = thenConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(thenConditional.status && thenConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": thenConditional.status,
+                                                                   "text": thenConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(thenConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": thenConditional.status
+                                                                   };
+                                                               }
+                                                               else if(thenConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": thenConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
+                                                   }
+                                                   else{//Si no se cumple la condición entonces
                                                        if(elseConditional.url == ipAddress){
                                                            var sqlquery = "SELECT * FROM hardware WHERE id = ?";
                                                            conec.query(sqlquery, [elseConditional.id], function (err2, rows2, fields2) {
@@ -3438,7 +5788,7 @@ var server = http.createServer(function(request, response){
                                                                if (rows2.length == 0) {
                                                                    checkCond = false;
                                                                } else {
-                                                                   if (rows2[0].type == "Input") {
+                                                                   if (rows2[0].type == "input") {
                                                                        //Error, no puede ser input, debe de ser output el change
                                                                        checkCond = false;
                                                                    }else{//output
@@ -3494,9 +5844,59 @@ var server = http.createServer(function(request, response){
                                                                }
                                                            });
                                                        }
+                                                       else{//Evento externo
+                                                           var idComp = elseConditional.id;
+                                                           //Se crea el JSON para enviar el change
+                                                           let bodyToSend = {
+                                                               "id": "MWApp_FernandoSagastume",
+                                                               "url": ipAddress,
+                                                               "date": new Date().toISOString(),
+                                                               "change": {}
+                                                           };
+                                                           if(elseConditional.status && elseConditional.text) {
+                                                               bodyToSend.change[idComp] = {
+                                                                   "status": elseConditional.status,
+                                                                   "text": elseConditional.text
+                                                               };
+                                                           }
+                                                           else{
+                                                               if(elseConditional.status){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "status": elseConditional.status
+                                                                   };
+                                                               }
+                                                               else if(elseConditional.text){
+                                                                   bodyToSend.change[idComp] = {
+                                                                       "text": elseConditional.text
+                                                                   };
+                                                               }
+                                                           }
+                                                           let options = {
+                                                               hostname: thenConditional.url,
+                                                               path: "/change/",
+                                                               method: "POST",
+                                                               headers: {
+                                                                   "Content-Type": "application/json",
+                                                                   "Content-Length": Buffer.byteLength(JSON.stringify(bodyToSend))
+                                                               }
+                                                           }
+                                                           //Se envia el request para el change
+                                                           http.request(options, res => {
+                                                               let dataR = "";
+                                                               res.on("data", d => {
+                                                                   dataR += d;
+                                                               })
+                                                               res.on("end", () => {
+                                                                   console.log(dataR);
+                                                               })
+                                                           })
+                                                               .on("error", console.error)
+                                                               .end(JSON.stringify(bodyToSend));
+                                                       }
                                                    }
-                                               }else if(ifConditional.left.id == "MSG_SONG"){
-                                                   checkCond = false;
+                                               }
+                                               else if(ifConditional.left.id == "MSG_SONG"){
+                                                   var aux = data.substring(25);
                                                }
                                                break;
                                            default:
@@ -4138,6 +6538,7 @@ var server = http.createServer(function(request, response){
                                                                     //Se guarda el request del virtual device en la bitacora como init por ser el primero
                                                                     var vals = [[moment().format('YYYY-MM-DD HH:mm:ss'), VDNewData, rows[0].vdID]];
                                                                     conec.query(query, [vals], function (err, result) {
+                                                                        if(result)
                                                                         console.log("Bitacora VD cambiada por EU: " + result.affectedRows);
                                                                     });
                                                                 });
@@ -4328,7 +6729,7 @@ var server = http.createServer(function(request, response){
                                                     console.log("Filas insertadas en la tabla de responses: " + result1.affectedRows);
                                                 });
                                             }
-                                            else if (rows1[0].type == "Input") {
+                                            else if (rows1[0].type == "input") {
                                                 json_change["status"] = "ERROR";
                                                 response.setHeader('Content-Type', 'application/json');
                                                 //Se envía el JSON como el response
@@ -4434,7 +6835,7 @@ var server = http.createServer(function(request, response){
                                                 console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
                                             });
                                         } else {
-                                            if (rows[0].type == "Input") {
+                                            if (rows[0].type == "input") {
                                                 //Se verifica que venga o sensor o texto
                                                 if (EVENT_JSON.create.if.right.sensor || EVENT_JSON.create.if.right.text) {
                                                     if (EVENT_JSON.create.then.url == ipAddress) {
@@ -4978,7 +7379,7 @@ var server = http.createServer(function(request, response){
                                                         console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
                                                     });
                                                 } else {
-                                                    if (rows[0].type == "Input") {
+                                                    if (rows[0].type == "input") {
                                                         //Se verifica que venga o sensor o texto
                                                         if (EVENT_JSON.update.if.right.sensor || EVENT_JSON.update.if.right.text) {
                                                             if (EVENT_JSON.update.then.url == ipAddress) {
@@ -5015,39 +7416,49 @@ var server = http.createServer(function(request, response){
                                                                                         console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
                                                                                     });
                                                                                 } else {
-                                                                                    var sqlquery = "SELECT appID FROM aplicaciones WHERE requestID = ?";
-                                                                                    conec.query(sqlquery, [EVENT_JSON.id], function (err3, rows3, fields3) {
-                                                                                        //Se prepara la data para actualizar la tabla de eventos
-                                                                                        var consulta = "UPDATE eventos SET ifCond = ? , thenCond = ? , elseCond = ? WHERE eventID = " + EVENT_JSON.update.id;
-                                                                                        //Se crea un moment
-                                                                                        var postdate = moment(EVENT_JSON.date);
-                                                                                        //Se parsea a un formato más entendible
-                                                                                        var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
-                                                                                        //Los valores a insertar en la tabla de eventos
-                                                                                        var values = [JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
-                                                                                            JSON.stringify(EVENT_JSON.update.else)];
-                                                                                        //Se hace la consulta a la base de datos
-                                                                                        conec.query(consulta, [values], function (err4, result) {
-                                                                                            if (err4) throw err4;
-                                                                                            if (result.affectedRows) {
-                                                                                                console.log("Evento creado y guardado en la DB: " + result.affectedRows);
-                                                                                                response.setHeader('Content-type', 'application/json');
-                                                                                                response.end(JSON.stringify(json_ok));
-                                                                                                //Se prepara la data para insertar en la bitacora de responses
-                                                                                                var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                                                                //Los valores a insertar en la tabla de la bitacora
-                                                                                                var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
-                                                                                                    moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                                                                //Se hace la consulta a la base de datos
-                                                                                                conec.query(consult, [valus], function (er1, resultado1) {
-                                                                                                    if(er1) throw er1;
-                                                                                                    console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
-                                                                                                });
-                                                                                            } else {
-                                                                                                console.log("No se pudo insertar en la DB la data del evento")
-                                                                                            }
+                                                                                        var getEvent = "SELECT * FROM eventos WHERE eventID = ?";
+                                                                                        conec.query(getEvent, [EVENT_JSON.update.id], function (getErr, getRows, getFields) {
+                                                                                            if(getErr) throw getErr;
+                                                                                            conec.query("DELETE FROM eventos WHERE eventID = ?", [EVENT_JSON.update.id],
+                                                                                                function (delErr, delRes) {
+                                                                                                if(delRes.affectedRows){
+                                                                                                    console.log("Se elimino el evento: ", delRes.affectedRows);
+                                                                                                    //Se prepara la data para actualizar la tabla de eventos
+                                                                                                    var consulta = "INSERT INTO eventos (eventID, url, DateAndTime, ifCond, thenCond, elseCond, appID) VALUES ?";
+                                                                                                    //Se crea un moment
+                                                                                                    var postdate = moment(EVENT_JSON.date);
+                                                                                                    //Se parsea a un formato más entendible
+                                                                                                    var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                                                                                    //Los valores a insertar en la tabla de eventos
+                                                                                                    var values = [parseInt(EVENT_JSON.update.id), EVENT_JSON.date,
+                                                                                                        JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
+                                                                                                        JSON.stringify(EVENT_JSON.update.else), getRows[0].appID];
+                                                                                                    //Se hace la consulta a la base de datos
+                                                                                                    conec.query(consulta, [values], function (err4, result) {
+                                                                                                        if (err4) throw err4;
+                                                                                                        if (result.affectedRows) {
+                                                                                                            console.log("Evento creado y guardado en la DB: " + result.affectedRows);
+                                                                                                            response.setHeader('Content-type', 'application/json');
+                                                                                                            response.end(JSON.stringify(json_ok));
+                                                                                                            //Se prepara la data para insertar en la bitacora de responses
+                                                                                                            var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                                                                            //Los valores a insertar en la tabla de la bitacora
+                                                                                                            var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
+                                                                                                                moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                                                                            //Se hace la consulta a la base de datos
+                                                                                                            conec.query(consult, [valus], function (er1, resultado1) {
+                                                                                                                if(er1) throw er1;
+                                                                                                                console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                                                                                            });
+                                                                                                        } else {
+                                                                                                            console.log("No se pudo insertar en la DB la data del evento")
+                                                                                                        }
+                                                                                                    });
+                                                                                                }else{
+                                                                                                    console.error("No se pudo concretar la operación");
+                                                                                                }
+                                                                                            })
                                                                                         });
-                                                                                    });
                                                                                 }
                                                                             });
                                                                         } else {
@@ -5103,72 +7514,94 @@ var server = http.createServer(function(request, response){
                                                                             console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
                                                                         });
                                                                     } else {
-                                                                        var sqlquery = "SELECT appID FROM aplicaciones WHERE requestID = ?";
-                                                                        conec.query(sqlquery, [EVENT_JSON.id], function (err3, rows3, fields3) {
-                                                                            //Se prepara la data para actualizar la tabla de eventos
-                                                                            var consulta = "UPDATE eventos SET ifCond = ? , thenCond = ? , elseCond = ? WHERE eventID = " + EVENT_JSON.update.id;
-                                                                            //Se crea un moment
-                                                                            var postdate = moment(EVENT_JSON.date);
-                                                                            //Se parsea a un formato más entendible
-                                                                            var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
-                                                                            //Los valores a insertar en la tabla de eventos
-                                                                            var values = [JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
-                                                                                JSON.stringify(EVENT_JSON.update.else)];
-                                                                            //Se hace la consulta a la base de datos
-                                                                            conec.query(consulta, [values], function (err4, result) {
-                                                                                if (err4) throw err4;
-                                                                                if (result.affectedRows) {
-                                                                                    console.log("Evento creado y guardado en la DB: " + result.affectedRows);
-                                                                                    response.setHeader('Content-type', 'application/json');
-                                                                                    response.end(JSON.stringify(json_ok));
-                                                                                    //Se prepara la data para insertar en la bitacora de responses
-                                                                                    var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                                                    //Los valores a insertar en la tabla de la bitacora
-                                                                                    var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                                                    //Se hace la consulta a la base de datos
-                                                                                    conec.query(consult, [valus], function (er1, resultado1) {
-                                                                                        if(er1) throw er1;
-                                                                                        console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
-                                                                                    });
-                                                                                } else {
-                                                                                    console.log("No se pudo insertar en la DB la data del evento")
-                                                                                }
-                                                                            });
+                                                                        var getEvent = "SELECT * FROM eventos WHERE eventID = ?";
+                                                                        conec.query(getEvent, [EVENT_JSON.update.id], function (getErr, getRows, getFields) {
+                                                                            if(getErr) throw getErr;
+                                                                            conec.query("DELETE FROM eventos WHERE eventID = ?", [EVENT_JSON.update.id],
+                                                                                function (delErr, delRes) {
+                                                                                    if(delRes.affectedRows){
+                                                                                        console.log("Se elimino el evento: ", delRes.affectedRows);
+                                                                                        //Se prepara la data para actualizar la tabla de eventos
+                                                                                        var consulta = "INSERT INTO eventos (eventID, url, DateAndTime, ifCond, thenCond, elseCond, appID) VALUES ?";
+                                                                                        //Se crea un moment
+                                                                                        var postdate = moment(EVENT_JSON.date);
+                                                                                        //Se parsea a un formato más entendible
+                                                                                        var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                                                                        //Los valores a insertar en la tabla de eventos
+                                                                                        var values = [parseInt(EVENT_JSON.update.id), EVENT_JSON.date,
+                                                                                            JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
+                                                                                            JSON.stringify(EVENT_JSON.update.else), getRows[0].appID];
+                                                                                        //Se hace la consulta a la base de datos
+                                                                                        conec.query(consulta, [values], function (err4, result) {
+                                                                                            if (err4) throw err4;
+                                                                                            if (result.affectedRows) {
+                                                                                                console.log("Evento creado y guardado en la DB: " + result.affectedRows);
+                                                                                                response.setHeader('Content-type', 'application/json');
+                                                                                                response.end(JSON.stringify(json_ok));
+                                                                                                //Se prepara la data para insertar en la bitacora de responses
+                                                                                                var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                                                                //Los valores a insertar en la tabla de la bitacora
+                                                                                                var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
+                                                                                                    moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                                                                //Se hace la consulta a la base de datos
+                                                                                                conec.query(consult, [valus], function (er1, resultado1) {
+                                                                                                    if(er1) throw er1;
+                                                                                                    console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                                                                                });
+                                                                                            } else {
+                                                                                                console.log("No se pudo insertar en la DB la data del evento")
+                                                                                            }
+                                                                                        });
+                                                                                    }else{
+                                                                                        console.error("No se pudo concretar la operación");
+                                                                                    }
+                                                                                })
                                                                         });
                                                                     }
                                                                 });
                                                             } else {
-                                                                var sqlquery = "SELECT appID FROM aplicaciones WHERE requestID = ?";
-                                                                conec.query(sqlquery, [EVENT_JSON.id], function (err3, rows3, fields3) {
-                                                                    //Se prepara la data para actualizar la tabla de eventos
-                                                                    var consulta = "UPDATE eventos SET ifCond = ? , thenCond = ? , elseCond = ? WHERE eventID = " + EVENT_JSON.update.id;
-                                                                    //Se crea un moment
-                                                                    var postdate = moment(EVENT_JSON.date);
-                                                                    //Se parsea a un formato más entendible
-                                                                    var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
-                                                                    //Los valores a insertar en la tabla de eventos
-                                                                    var values = [JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
-                                                                        JSON.stringify(EVENT_JSON.update.else)];
-                                                                    //Se hace la consulta a la base de datos
-                                                                    conec.query(consulta, [values], function (err4, result) {
-                                                                        if (err4) throw err4;
-                                                                        if (result.affectedRows) {
-                                                                            console.log("Evento creado y guardado en la DB: " + result.affectedRows);
-                                                                            response.setHeader('Content-type', 'application/json');
-                                                                            response.end(JSON.stringify(json_ok));
-                                                                            //Se prepara la data para insertar en la bitacora de responses
-                                                                            var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                                            //Los valores a insertar en la tabla de la bitacora
-                                                                            var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                                            //Se hace la consulta a la base de datos
-                                                                            conec.query(consult, [valus], function (er1, resultado1) {
-                                                                                if(er1) throw er1;
-                                                                                console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
-                                                                            });
-                                                                        } else {
-                                                                            console.log("No se pudo insertar en la DB la data del evento")
-                                                                        }
-                                                                    });
+                                                                var getEvent = "SELECT * FROM eventos WHERE eventID = ?";
+                                                                conec.query(getEvent, [EVENT_JSON.update.id], function (getErr, getRows, getFields) {
+                                                                    if(getErr) throw getErr;
+                                                                    conec.query("DELETE FROM eventos WHERE eventID = ?", [EVENT_JSON.update.id],
+                                                                        function (delErr, delRes) {
+                                                                            if(delRes.affectedRows){
+                                                                                console.log("Se elimino el evento: ", delRes.affectedRows);
+                                                                                //Se prepara la data para actualizar la tabla de eventos
+                                                                                var consulta = "INSERT INTO eventos (eventID, url, DateAndTime, ifCond, thenCond, elseCond, appID) VALUES ?";
+                                                                                //Se crea un moment
+                                                                                var postdate = moment(EVENT_JSON.date);
+                                                                                //Se parsea a un formato más entendible
+                                                                                var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                                                                //Los valores a insertar en la tabla de eventos
+                                                                                var values = [parseInt(EVENT_JSON.update.id), EVENT_JSON.date,
+                                                                                    JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
+                                                                                    JSON.stringify(EVENT_JSON.update.else), getRows[0].appID];
+                                                                                //Se hace la consulta a la base de datos
+                                                                                conec.query(consulta, [values], function (err4, result) {
+                                                                                    if (err4) throw err4;
+                                                                                    if (result.affectedRows) {
+                                                                                        console.log("Evento creado y guardado en la DB: " + result.affectedRows);
+                                                                                        response.setHeader('Content-type', 'application/json');
+                                                                                        response.end(JSON.stringify(json_ok));
+                                                                                        //Se prepara la data para insertar en la bitacora de responses
+                                                                                        var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                                                        //Los valores a insertar en la tabla de la bitacora
+                                                                                        var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
+                                                                                            moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                                                        //Se hace la consulta a la base de datos
+                                                                                        conec.query(consult, [valus], function (er1, resultado1) {
+                                                                                            if(er1) throw er1;
+                                                                                            console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                                                                        });
+                                                                                    } else {
+                                                                                        console.log("No se pudo insertar en la DB la data del evento")
+                                                                                    }
+                                                                                });
+                                                                            }else{
+                                                                                console.error("No se pudo concretar la operación");
+                                                                            }
+                                                                        })
                                                                 });
                                                             }
                                                         } else {//No vienen datos para el input entonces error
@@ -5219,72 +7652,94 @@ var server = http.createServer(function(request, response){
                                                                                     console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
                                                                                 });
                                                                             } else {
-                                                                                var sqlquery = "SELECT appID FROM aplicaciones WHERE requestID = ?";
-                                                                                conec.query(sqlquery, [EVENT_JSON.id], function (err3, rows3, fields3) {
-                                                                                    //Se prepara la data para actualizar la tabla de eventos
-                                                                                    var consulta = "UPDATE eventos SET ifCond = ? , thenCond = ? , elseCond = ? WHERE eventID = " + EVENT_JSON.update.id;
-                                                                                    //Se crea un moment
-                                                                                    var postdate = moment(EVENT_JSON.date);
-                                                                                    //Se parsea a un formato más entendible
-                                                                                    var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
-                                                                                    //Los valores a insertar en la tabla de eventos
-                                                                                    var values = [JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
-                                                                                        JSON.stringify(EVENT_JSON.update.else)];
-                                                                                    //Se hace la consulta a la base de datos
-                                                                                    conec.query(consulta, [values], function (err4, result) {
-                                                                                        if (err4) throw err4;
-                                                                                        if (result.affectedRows) {
-                                                                                            console.log("Evento creado y guardado en la DB: " + result.affectedRows);
-                                                                                            response.setHeader('Content-type', 'application/json');
-                                                                                            response.end(JSON.stringify(json_ok));
-                                                                                            //Se prepara la data para insertar en la bitacora de responses
-                                                                                            var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                                                            //Los valores a insertar en la tabla de la bitacora
-                                                                                            var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_event), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                                                            //Se hace la consulta a la base de datos
-                                                                                            conec.query(consult, [valus], function (er1, resultado1) {
-                                                                                                if(er1) throw er1;
-                                                                                                console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
-                                                                                            });
-                                                                                        } else {
-                                                                                            console.log("No se pudo insertar en la DB la data del evento")
-                                                                                        }
-                                                                                    });
+                                                                                var getEvent = "SELECT * FROM eventos WHERE eventID = ?";
+                                                                                conec.query(getEvent, [EVENT_JSON.update.id], function (getErr, getRows, getFields) {
+                                                                                    if(getErr) throw getErr;
+                                                                                    conec.query("DELETE FROM eventos WHERE eventID = ?", [EVENT_JSON.update.id],
+                                                                                        function (delErr, delRes) {
+                                                                                            if(delRes.affectedRows){
+                                                                                                console.log("Se elimino el evento: ", delRes.affectedRows);
+                                                                                                //Se prepara la data para actualizar la tabla de eventos
+                                                                                                var consulta = "INSERT INTO eventos (eventID, url, DateAndTime, ifCond, thenCond, elseCond, appID) VALUES ?";
+                                                                                                //Se crea un moment
+                                                                                                var postdate = moment(EVENT_JSON.date);
+                                                                                                //Se parsea a un formato más entendible
+                                                                                                var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                                                                                //Los valores a insertar en la tabla de eventos
+                                                                                                var values = [parseInt(EVENT_JSON.update.id), EVENT_JSON.date,
+                                                                                                    JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
+                                                                                                    JSON.stringify(EVENT_JSON.update.else), getRows[0].appID];
+                                                                                                //Se hace la consulta a la base de datos
+                                                                                                conec.query(consulta, [values], function (err4, result) {
+                                                                                                    if (err4) throw err4;
+                                                                                                    if (result.affectedRows) {
+                                                                                                        console.log("Evento creado y guardado en la DB: " + result.affectedRows);
+                                                                                                        response.setHeader('Content-type', 'application/json');
+                                                                                                        response.end(JSON.stringify(json_ok));
+                                                                                                        //Se prepara la data para insertar en la bitacora de responses
+                                                                                                        var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                                                                        //Los valores a insertar en la tabla de la bitacora
+                                                                                                        var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
+                                                                                                            moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                                                                        //Se hace la consulta a la base de datos
+                                                                                                        conec.query(consult, [valus], function (er1, resultado1) {
+                                                                                                            if(er1) throw er1;
+                                                                                                            console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                                                                                        });
+                                                                                                    } else {
+                                                                                                        console.log("No se pudo insertar en la DB la data del evento")
+                                                                                                    }
+                                                                                                });
+                                                                                            }else{
+                                                                                                console.error("No se pudo concretar la operación");
+                                                                                            }
+                                                                                        })
                                                                                 });
                                                                             }
                                                                         });
                                                                     } else {
-                                                                        var sqlquery = "SELECT appID FROM aplicaciones WHERE requestID = ?";
-                                                                        conec.query(sqlquery, [EVENT_JSON.id], function (err3, rows3, fields3) {
-                                                                            //Se prepara la data para actualizar la tabla de eventos
-                                                                            var consulta = "UPDATE eventos SET ifCond = ? , thenCond = ? , elseCond = ? WHERE eventID = " + EVENT_JSON.update.id;
-                                                                            //Se crea un moment
-                                                                            var postdate = moment(EVENT_JSON.date);
-                                                                            //Se parsea a un formato más entendible
-                                                                            var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
-                                                                            //Los valores a insertar en la tabla de eventos
-                                                                            var values = [JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
-                                                                                JSON.stringify(EVENT_JSON.update.else)];
-                                                                            //Se hace la consulta a la base de datos
-                                                                            conec.query(consulta, [values], function (err4, result) {
-                                                                                if (err4) throw err4;
-                                                                                if (result.affectedRows) {
-                                                                                    console.log("Evento creado y guardado en la DB: " + result.affectedRows);
-                                                                                    response.setHeader('Content-type', 'application/json');
-                                                                                    response.end(JSON.stringify(json_ok));
-                                                                                    //Se prepara la data para insertar en la bitacora de responses
-                                                                                    var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                                                    //Los valores a insertar en la tabla de la bitacora
-                                                                                    var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                                                    //Se hace la consulta a la base de datos
-                                                                                    conec.query(consult, [valus], function (er1, resultado1) {
-                                                                                        if(er1) throw er1;
-                                                                                        console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
-                                                                                    });
-                                                                                } else {
-                                                                                    console.log("No se pudo insertar en la DB la data del evento")
-                                                                                }
-                                                                            });
+                                                                        var getEvent = "SELECT * FROM eventos WHERE eventID = ?";
+                                                                        conec.query(getEvent, [EVENT_JSON.update.id], function (getErr, getRows, getFields) {
+                                                                            if(getErr) throw getErr;
+                                                                            conec.query("DELETE FROM eventos WHERE eventID = ?", [EVENT_JSON.update.id],
+                                                                                function (delErr, delRes) {
+                                                                                    if(delRes.affectedRows){
+                                                                                        console.log("Se elimino el evento: ", delRes.affectedRows);
+                                                                                        //Se prepara la data para actualizar la tabla de eventos
+                                                                                        var consulta = "INSERT INTO eventos (eventID, url, DateAndTime, ifCond, thenCond, elseCond, appID) VALUES ?";
+                                                                                        //Se crea un moment
+                                                                                        var postdate = moment(EVENT_JSON.date);
+                                                                                        //Se parsea a un formato más entendible
+                                                                                        var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                                                                        //Los valores a insertar en la tabla de eventos
+                                                                                        var values = [parseInt(EVENT_JSON.update.id), EVENT_JSON.date,
+                                                                                            JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
+                                                                                            JSON.stringify(EVENT_JSON.update.else), getRows[0].appID];
+                                                                                        //Se hace la consulta a la base de datos
+                                                                                        conec.query(consulta, [values], function (err4, result) {
+                                                                                            if (err4) throw err4;
+                                                                                            if (result.affectedRows) {
+                                                                                                console.log("Evento creado y guardado en la DB: " + result.affectedRows);
+                                                                                                response.setHeader('Content-type', 'application/json');
+                                                                                                response.end(JSON.stringify(json_ok));
+                                                                                                //Se prepara la data para insertar en la bitacora de responses
+                                                                                                var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                                                                //Los valores a insertar en la tabla de la bitacora
+                                                                                                var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
+                                                                                                    moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                                                                //Se hace la consulta a la base de datos
+                                                                                                conec.query(consult, [valus], function (er1, resultado1) {
+                                                                                                    if(er1) throw er1;
+                                                                                                    console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                                                                                });
+                                                                                            } else {
+                                                                                                console.log("No se pudo insertar en la DB la data del evento")
+                                                                                            }
+                                                                                        });
+                                                                                    }else{
+                                                                                        console.error("No se pudo concretar la operación");
+                                                                                    }
+                                                                                })
                                                                         });
                                                                     }
                                                                 }
@@ -5306,123 +7761,151 @@ var server = http.createServer(function(request, response){
                                                                         console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
                                                                     });
                                                                 } else {
-                                                                    var sqlquery = "SELECT appID FROM aplicaciones WHERE requestID = ?";
-                                                                    conec.query(sqlquery, [EVENT_JSON.id], function (err3, rows3, fields3) {
-                                                                        //Se prepara la data para actualizar la tabla de eventos
-                                                                        var consulta = "UPDATE eventos SET ifCond = ? , thenCond = ? , elseCond = ? WHERE eventID = " + EVENT_JSON.update.id;
-                                                                        //Se crea un moment
-                                                                        var postdate = moment(EVENT_JSON.date);
-                                                                        //Se parsea a un formato más entendible
-                                                                        var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
-                                                                        //Los valores a insertar en la tabla de eventos
-                                                                        var values = [JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
-                                                                            JSON.stringify(EVENT_JSON.update.else)];
-                                                                        //Se hace la consulta a la base de datos
-                                                                        conec.query(consulta, [values], function (err4, result) {
-                                                                            if (err4) throw err4;
-                                                                            if (result.affectedRows) {
-                                                                                console.log("Evento creado y guardado en la DB: " + result.affectedRows);
-                                                                                response.setHeader('Content-type', 'application/json');
-                                                                                response.end(JSON.stringify(json_ok));
-                                                                                //Se prepara la data para insertar en la bitacora de responses
-                                                                                var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                                                //Los valores a insertar en la tabla de la bitacora
-                                                                                var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                                                //Se hace la consulta a la base de datos
-                                                                                conec.query(consult, [valus], function (er1, resultado1) {
-                                                                                    if(er1) throw er1;
-                                                                                    console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
-                                                                                });
-                                                                            } else {
-                                                                                console.log("No se pudo insertar en la DB la data del evento")
-                                                                            }
-                                                                        });
+                                                                    var getEvent = "SELECT * FROM eventos WHERE eventID = ?";
+                                                                    conec.query(getEvent, [EVENT_JSON.update.id], function (getErr, getRows, getFields) {
+                                                                        if(getErr) throw getErr;
+                                                                        conec.query("DELETE FROM eventos WHERE eventID = ?", [EVENT_JSON.update.id],
+                                                                            function (delErr, delRes) {
+                                                                                if(delRes.affectedRows){
+                                                                                    console.log("Se elimino el evento: ", delRes.affectedRows);
+                                                                                    //Se prepara la data para actualizar la tabla de eventos
+                                                                                    var consulta = "INSERT INTO eventos (eventID, url, DateAndTime, ifCond, thenCond, elseCond, appID) VALUES ?";
+                                                                                    //Se crea un moment
+                                                                                    var postdate = moment(EVENT_JSON.date);
+                                                                                    //Se parsea a un formato más entendible
+                                                                                    var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                                                                    //Los valores a insertar en la tabla de eventos
+                                                                                    var values = [parseInt(EVENT_JSON.update.id), EVENT_JSON.date,
+                                                                                        JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
+                                                                                        JSON.stringify(EVENT_JSON.update.else), getRows[0].appID];
+                                                                                    //Se hace la consulta a la base de datos
+                                                                                    conec.query(consulta, [values], function (err4, result) {
+                                                                                        if (err4) throw err4;
+                                                                                        if (result.affectedRows) {
+                                                                                            console.log("Evento creado y guardado en la DB: " + result.affectedRows);
+                                                                                            response.setHeader('Content-type', 'application/json');
+                                                                                            response.end(JSON.stringify(json_ok));
+                                                                                            //Se prepara la data para insertar en la bitacora de responses
+                                                                                            var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                                                            //Los valores a insertar en la tabla de la bitacora
+                                                                                            var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
+                                                                                                moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                                                            //Se hace la consulta a la base de datos
+                                                                                            conec.query(consult, [valus], function (er1, resultado1) {
+                                                                                                if(er1) throw er1;
+                                                                                                console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                                                                            });
+                                                                                        } else {
+                                                                                            console.log("No se pudo insertar en la DB la data del evento")
+                                                                                        }
+                                                                                    });
+                                                                                }else{
+                                                                                    console.error("No se pudo concretar la operación");
+                                                                                }
+                                                                            })
                                                                     });
                                                                 }
                                                             });
                                                         } else {
-                                                            var sqlquery = "SELECT appID FROM aplicaciones WHERE requestID = ?";
-                                                            conec.query(sqlquery, [EVENT_JSON.id], function (err3, rows3, fields3) {
-                                                                //Se prepara la data para actualizar la tabla de eventos
-                                                                var consulta = "UPDATE eventos SET ifCond = ? , thenCond = ? , elseCond = ? WHERE eventID = " + EVENT_JSON.update.id;
-                                                                //Se crea un moment
-                                                                var postdate = moment(EVENT_JSON.date);
-                                                                //Se parsea a un formato más entendible
-                                                                var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
-                                                                //Los valores a insertar en la tabla de eventos
-                                                                var values = [JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
-                                                                    JSON.stringify(EVENT_JSON.update.else)];
-                                                                /*
-                                                                var values = [{ifCond: JSON.stringify(EVENT_JSON.update.if), thenCond: JSON.stringify(EVENT_JSON.update.then),
-                                                                    elseCond: JSON.stringify(EVENT_JSON.update.else)},
-                                                                    {eventID: EVENT_JSON.update.id}];
-                                                                 */
-                                                                //Se hace la consulta a la base de datos
-                                                                conec.query(consulta, [values], function (err4, result) {
-                                                                    if (err4) throw err4;
-                                                                    if (result.affectedRows) {
-                                                                        console.log("Evento creado y guardado en la DB: " + result.affectedRows);
-                                                                        response.setHeader('Content-type', 'application/json');
-                                                                        response.end(JSON.stringify(json_ok));
-                                                                        //Se prepara la data para insertar en la bitacora de responses
-                                                                        var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                                        //Los valores a insertar en la tabla de la bitacora
-                                                                        var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                                        //Se hace la consulta a la base de datos
-                                                                        conec.query(consult, [valus], function (er1, resultado1) {
-                                                                            if(er1) throw er1;
-                                                                            console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
-                                                                        });
-                                                                    } else {
-                                                                        console.log("No se pudo insertar en la DB la data del evento")
-                                                                    }
-                                                                });
+                                                            var getEvent = "SELECT * FROM eventos WHERE eventID = ?";
+                                                            conec.query(getEvent, [EVENT_JSON.update.id], function (getErr, getRows, getFields) {
+                                                                if(getErr) throw getErr;
+                                                                conec.query("DELETE FROM eventos WHERE eventID = ?", [EVENT_JSON.update.id],
+                                                                    function (delErr, delRes) {
+                                                                        if(delRes.affectedRows){
+                                                                            console.log("Se elimino el evento: ", delRes.affectedRows);
+                                                                            //Se prepara la data para actualizar la tabla de eventos
+                                                                            var consulta = "INSERT INTO eventos (eventID, url, DateAndTime, ifCond, thenCond, elseCond, appID) VALUES ?";
+                                                                            //Se crea un moment
+                                                                            var postdate = moment(EVENT_JSON.date);
+                                                                            //Se parsea a un formato más entendible
+                                                                            var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                                                            //Los valores a insertar en la tabla de eventos
+                                                                            var values = [parseInt(EVENT_JSON.update.id), EVENT_JSON.date,
+                                                                                JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
+                                                                                JSON.stringify(EVENT_JSON.update.else), getRows[0].appID];
+                                                                            //Se hace la consulta a la base de datos
+                                                                            conec.query(consulta, [values], function (err4, result) {
+                                                                                if (err4) throw err4;
+                                                                                if (result.affectedRows) {
+                                                                                    console.log("Evento creado y guardado en la DB: " + result.affectedRows);
+                                                                                    response.setHeader('Content-type', 'application/json');
+                                                                                    response.end(JSON.stringify(json_ok));
+                                                                                    //Se prepara la data para insertar en la bitacora de responses
+                                                                                    var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                                                    //Los valores a insertar en la tabla de la bitacora
+                                                                                    var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
+                                                                                        moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                                                    //Se hace la consulta a la base de datos
+                                                                                    conec.query(consult, [valus], function (er1, resultado1) {
+                                                                                        if(er1) throw er1;
+                                                                                        console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                                                                    });
+                                                                                } else {
+                                                                                    console.log("No se pudo insertar en la DB la data del evento")
+                                                                                }
+                                                                            });
+                                                                        }else{
+                                                                            console.error("No se pudo concretar la operación");
+                                                                        }
+                                                                    })
                                                             });
                                                         }
                                                     }
                                                 }
                                             });
                                         } else {
-                                            var sqlquery = "SELECT appID FROM aplicaciones WHERE requestID = ?";
-                                            conec.query(sqlquery, [EVENT_JSON.id], function (err3, rows3, fields3) {
-                                                //Se prepara la data para actualizar la tabla de eventos
-                                                var consulta = "UPDATE eventos SET ifCond = ? , thenCond = ? , elseCond = ? WHERE eventID = " + EVENT_JSON.update.id;
-                                                //Se crea un moment
-                                                var postdate = moment(EVENT_JSON.date);
-                                                //Se parsea a un formato más entendible
-                                                var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
-                                                //Los valores a insertar en la tabla de eventos
-                                                var values = [JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
-                                                    JSON.stringify(EVENT_JSON.update.else)];
-                                                //Se hace la consulta a la base de datos
-                                                conec.query(consulta, [values], function (err4, result) {
-                                                    if (err4) throw err4;
-                                                    if (result.affectedRows) {
-                                                        console.log("Evento actualizado en la DB: " + result.affectedRows);
-                                                        response.setHeader('Content-type', 'application/json');
-                                                        response.end(JSON.stringify(json_ok));
-                                                        //Se prepara la data para insertar en la bitacora de responses
-                                                        var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                        //Los valores a insertar en la tabla de la bitacora
-                                                        var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                        //Se hace la consulta a la base de datos
-                                                        conec.query(consult, [valus], function (er1, resultado1) {
-                                                            if(er1) throw er1;
-                                                            console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
-                                                        });
-                                                    } else {
-                                                        console.log("No se pudo insertar en la DB la data del evento");
-                                                        errHappened = true;
-                                                        response.setHeader('Content-type', 'application/json');
-                                                        response.end(JSON.stringify(json_error));
-                                                        //Se prepara la data para insertar en la bitacora de responses
-                                                        var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
-                                                        //Los valores a insertar en la tabla de la bitacora
-                                                        var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_error), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
-                                                        //Se hace la consulta a la base de datos
-                                                        conec.query(consult, [valus], function (er1, resultado1) {
-                                                            if(er1) throw er1;
-                                                            console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                            var getEvent = "SELECT * FROM eventos WHERE eventID = ?";
+                                            conec.query(getEvent, [EVENT_JSON.update.id], function (getErr, getRows, getFields) {
+                                                if(getErr) throw getErr;
+                                                conec.query("DELETE FROM eventos WHERE eventID = ?", [EVENT_JSON.update.id],
+                                                    function (delErr, delRes) {
+                                                        if(delRes.affectedRows){
+                                                            console.log("Se elimino el evento: ", delRes.affectedRows);
+                                                            //Se prepara la data para actualizar la tabla de eventos
+                                                            var consulta = "INSERT INTO eventos (eventID, url, DateAndTime, ifCond, thenCond, elseCond, appID) VALUES ?";
+                                                            //Se crea un moment
+                                                            var postdate = moment(EVENT_JSON.date);
+                                                            //Se parsea a un formato más entendible
+                                                            var fecha = postdate.format('YYYY-MM-DD HH:mm:ss');
+                                                            //Los valores a insertar en la tabla de eventos
+                                                            var values = [parseInt(EVENT_JSON.update.id), EVENT_JSON.date,
+                                                                JSON.stringify(EVENT_JSON.update.if), JSON.stringify(EVENT_JSON.update.then),
+                                                                JSON.stringify(EVENT_JSON.update.else), getRows[0].appID];
+                                                            //Se hace la consulta a la base de datos
+                                                            conec.query(consulta, [values], function (err4, result) {
+                                                                if (err4) throw err4;
+                                                                if (result.affectedRows) {
+                                                                    console.log("Evento creado y guardado en la DB: " + result.affectedRows);
+                                                                    response.setHeader('Content-type', 'application/json');
+                                                                    response.end(JSON.stringify(json_ok));
+                                                                    //Se prepara la data para insertar en la bitacora de responses
+                                                                    var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                                    //Los valores a insertar en la tabla de la bitacora
+                                                                    var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_ok),
+                                                                        moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                                    //Se hace la consulta a la base de datos
+                                                                    conec.query(consult, [valus], function (er1, resultado1) {
+                                                                        if(er1) throw er1;
+                                                                        console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
+                                                                    });
+                                                                } else {
+                                                                    console.log("No se pudo insertar en la DB la data del evento")
+                                                                }
+                                                            });
+                                                        }else {
+                                                            console.log("No se pudo insertar en la DB la data del evento");
+                                                            errHappened = true;
+                                                            response.setHeader('Content-type', 'application/json');
+                                                            response.end(JSON.stringify(json_error));
+                                                            //Se prepara la data para insertar en la bitacora de responses
+                                                            var consult = "INSERT INTO bitacora_responses (sentToURL, responseType, body, DateAndTime, binnacleID) VALUES ?";
+                                                            //Los valores a insertar en la tabla de la bitacora
+                                                            var valus = [[EVENT_JSON.url, "UPDATE", JSON.stringify(json_error), moment().format('YYYY-MM-DD HH:mm:ss'), resultado.insertId]];
+                                                            //Se hace la consulta a la base de datos
+                                                            conec.query(consult, [valus], function (er1, resultado1) {
+                                                                if(er1) throw er1;
+                                                                console.log("Filas insertadas en la tabla de responses: " + resultado1.affectedRows);
                                                         });
                                                     }
                                                 });
@@ -5574,3 +8057,17 @@ server.listen(8081, function(){
     //console.log(new Date('2020-11-06 15:00:00').toISOString());
     console.log('Se inició el server a las ' + moment().format('YYYY-MM-DD HH:mm:ss') + ', escuchando el puerto 8081');
 });
+(async function() {
+    try {
+        const url = await ngrok.connect(
+            {
+                proto: 'http',
+                addr: 8081
+            }
+        );
+        ipAddress = url;
+        console.log("El servidor se esta corriendo en la dirección : " + ipAddress);
+    }catch(errorr){
+        console.error(errorr);
+    }
+})();
