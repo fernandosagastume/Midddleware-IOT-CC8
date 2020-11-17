@@ -1,0 +1,66 @@
+java -cp VirtualDevice.jar CCVIII.IoT.VirtualDevice 2222
+Fercho100399!!
+HTTP/1.1 200 OK
+Server: CC8
+Content-Length: XXXXXXX
+Access-Control-Allow-Origin: http://XXXXXXXXXXXXX
+Content-Type: text/plain
+
+
+CREATE TABLE aplicaciones(
+    appID SERIAL PRIMARY KEY,
+    requestID VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE virtualdevices(
+	vdID SERIAL PRIMARY KEY,
+    requestID VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE bitacora_vd(
+	bitacora_VD_ID SERIAL PRIMARY KEY,
+    DateAndTime datetime NOT NULL, 
+    vdID BIGINT UNSIGNED NOT NULL,
+    dataSent VARCHAR(100) NOT NULL,
+    FOREIGN KEY (vdID) REFERENCES virtualdevices(vdID)
+);
+
+CREATE TABLE bitacora(
+    binnacleID SERIAL,
+	channel VARCHAR(5) NOT NULL, 
+    url VARCHAR(50) NOT NULL,
+    requestType VARCHAR(10) NOT NULL,
+    body JSON,
+    DateAndTime VARCHAR(50) NOT NULL,
+    appID BIGINT UNSIGNED,
+    PRIMARY KEY(binnacleID),
+    FOREIGN KEY(appID) REFERENCES aplicaciones(appID)
+);
+
+CREATE TABLE bitacora_responses(
+	responseID SERIAL PRIMARY KEY, 
+    sentToURL VARCHAR(50) NOT NULL,
+    responseType VARCHAR(10) NOT NULL,
+    body JSON NOT NULL,
+    DateAndTime VARCHAR(50) NOT NULL,
+    binnacleID BIGINT UNSIGNED,
+    FOREIGN key (binnacleID) REFERENCES bitacora(binnacleID)
+);
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("SLIDER_VOLUME", sustituir, "Input", "Slider de volumen");
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("MSG_SONG", sustituir, "Input", "Texto de la canción");
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("LCD_SONG", sustituir, "Output", "Display de canciones");
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("COLOR_PICKER", sustituir, "Input", "Selector de colores");
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("LED_RGB", sustituir, "Output", "Luz de efecto de bocina");
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("LED_GREEN", sustituir, "Output", "Luz dispositivo encendido");
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("LED_RED", sustituir, "Output", "Luz dispositivo apagado");
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("SW_START", sustituir, "Input", "Botón de start");
+
+INSERT INTO hardware(id, requestID, type, tag) VALUES("SW_STOP", sustituir, "Input", "Botón de stop");
